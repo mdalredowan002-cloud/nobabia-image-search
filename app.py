@@ -10,8 +10,16 @@ product data at all - it only understands images.
 
 Model: CLIP ViT-B/32 vision encoder, int8-quantized ONNX build, so it
 comfortably fits Render's free 512MB web service. The weights are not
-bundled in this repo - they're downloaded once from the Hugging Face
-Hub the first time the service starts (or wakes up from sleep).
+committed to this repo - they're downloaded from the Hugging Face Hub
+once, during the Render *build* step (see get_session() below and the
+service's Build Command), and cached inside the app's own folder so
+the build output carries them into the deployed image. That matters
+on Render's free tier: the service is put to sleep after ~15 minutes
+idle, and everything under /tmp is wiped on every restart, so a model
+cached there would otherwise have to be re-downloaded from Hugging
+Face on every single wake-up - by far the slowest part of a "cold"
+request. Caching next to app.py instead means a wake-up only pays for
+Render's own container start, not a fresh ~50MB download too.
 """
 
 import io
@@ -28,7 +36,8 @@ MODEL_URL = (
     "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/"
     "onnx/vision_model_quantized.onnx"
 )
-MODEL_PATH = "/tmp/vision_model_quantized.onnx"
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_cache")
+MODEL_PATH = os.path.join(MODEL_DIR, "vision_model_quantized.onnx")
 
 # Standard CLIP preprocessing constants (openai/clip-vit-base-patch32).
 CLIP_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
@@ -55,6 +64,7 @@ def get_session():
             return _session
 
         if not os.path.exists(MODEL_PATH):
+            os.makedirs(MODEL_DIR, exist_ok=True)
             tmp_path = MODEL_PATH + ".part"
             with requests.get(MODEL_URL, timeout=180, stream=True) as resp:
                 resp.raise_for_status()
